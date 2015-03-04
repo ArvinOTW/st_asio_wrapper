@@ -7,7 +7,7 @@
  *		QQ: 676218192
  *		Community on QQ: 198941541
  *
- * this class used at both client and server endpoint, and in both tcp and udp socket
+ * this class used at both client and server endpoint, and in both TCP and UDP socket
  */
 
 #ifndef ST_ASIO_WRAPPER_SOCKET_H_
@@ -35,7 +35,7 @@ enum BufferType {POST_BUFFER, SEND_BUFFER, RECV_BUFFER};
 #define recv_msg_buffer_mutex ST_THIS msg_buffer_mutex[2]
 #define temp_msg_buffer ST_THIS msg_buffer[3]
 
-template<typename MsgType, typename Socket>
+template<typename MsgType, typename Socket, typename MsgDataType = MsgType>
 class st_socket: public st_timer
 {
 public:
@@ -72,6 +72,17 @@ public:
 	typename Socket::lowest_layer_type& lowest_layer() {return next_layer().lowest_layer();}
 	const typename Socket::lowest_layer_type& lowest_layer() const {return next_layer().lowest_layer();}
 
+#ifdef REUSE_OBJECT
+	virtual bool reusable()
+	{
+		if (started())
+			return false;
+
+		boost::mutex::scoped_lock lock(recv_msg_buffer_mutex, boost::try_to_lock);
+		return lock.owns_lock(); //if recv_msg_buffer_mutex has been locked, then this socket should not be reused.
+	}
+#endif
+
 	bool started() const {return started_;}
 	void start()
 	{
@@ -97,8 +108,8 @@ public:
 	bool suspend_dispatch_msg() const {return suspend_dispatch_msg_;}
 
 	//get or change the packer at runtime
-	boost::shared_ptr<i_packer> inner_packer() const {return packer_;}
-	void inner_packer(const boost::shared_ptr<i_packer>& _packer_) {packer_ = _packer_;}
+	boost::shared_ptr<i_packer<MsgDataType> > inner_packer() {return packer_;}
+	void inner_packer(const boost::shared_ptr<i_packer<MsgDataType> >& _packer_) {packer_ = _packer_;}
 
 	//if you use can_overflow = true to invoke send_msg or send_native_msg, it will always succeed
 	//no matter whether the send buffer is available
@@ -146,7 +157,7 @@ public:
 	{
 		msg.clear();
 		//msgs in send buffer and post buffer are packed
-		//msgs in recv buffer are unpacked
+		//msgs in receive buffer are unpacked
 		boost::mutex::scoped_lock lock(msg_buffer_mutex[buffer_type]);
 		if (!msg_buffer[buffer_type].empty())
 			msg = msg_buffer[buffer_type].front();
@@ -156,7 +167,7 @@ public:
 	{
 		msg.clear();
 		//msgs in send buffer and post buffer are packed
-		//msgs in recv buffer are unpacked
+		//msgs in receive buffer are unpacked
 		boost::mutex::scoped_lock lock(msg_buffer_mutex[buffer_type]);
 		if (!msg_buffer[buffer_type].empty())
 		{
@@ -180,34 +191,38 @@ protected:
 	virtual bool is_send_allowed() const {return !suspend_send_msg_;}
 	//can send data or not(just put into send buffer)
 
-	//generally, you need not re-write this for link broken judgment(tcp)
+	//generally, you need not re-write this for link broken judgment(TCP)
 	virtual void on_send_error(const boost::system::error_code& ec)
 		{unified_out::error_out("send msg error: %d %s", ec.value(), ec.message().data());}
 
 #ifndef FORCE_TO_USE_MSG_RECV_BUFFER
-	//if you want to use your own recv buffer, you can move the msg to your own recv buffer,
-	//and return false, then, handle the msg as your own strategy(may be you'll need a msg dispatch thread)
-	//or, you can handle the msg at here and return false, but this will reduce efficiency(
-	//because this msg handling block the next msg receiving on the same st_tcp_socket) unless you can
-	//handle the msg very fast(which will inversely more efficient, because msg recv buffer and msg dispatching
-	//are not needed any more).
+	//if you want to use your own receive buffer, you can move the msg to your own receive buffer,
+	//then, handle the msg as your own strategy(may be you'll need a msg dispatch thread)
+	//or, you can handle the msg at here, but this will reduce efficiency(because this msg handling block
+	//the next msg receiving on the same st_socket) unless you can handle the msg very fast(which will
+	//inversely more efficient, because msg receive buffer and msg dispatching are not needed any more).
 	//
-	//return true means use the msg recv buffer, you must handle the msgs in on_msg_handle()
+	//return true means msg been handled, st_socket will not maintain it anymore, return false means
+	//msg cannot be handled right now, you must handle it in on_msg_handle()
 	//notice: on_msg_handle() will not be invoked from within this function
 	//
 	//notice: the msg is unpacked, using inconstant is for the convenience of swapping
 	virtual bool on_msg(MsgType& msg) = 0;
 #endif
 
-	//handling msg at here will not block msg receiving
-	//if on_msg() return false, this function will not be invoked due to no msgs need to dispatch
+	//handling msg in om_msg_handle() will not block msg receiving on the same st_socket
+	//return true means msg been handled, false means msg cannot be handled right now, and st_socket will
+	//re-dispatch it asynchronously
+	//if link_down is true, no matter return true or false, st_socket will not maintain this msg anymore,
+	//and continue dispatch the next msg continuously
+	//
 	//notice: the msg is unpacked, using inconstant is for the convenience of swapping
-	virtual void on_msg_handle(MsgType& msg) = 0;
+	virtual bool on_msg_handle(MsgType& msg, bool link_down) = 0;
 
 #ifdef WANT_MSG_SEND_NOTIFY
 	//one msg has sent to the kernel buffer, msg is the right msg(remain in packed)
 	//if the msg is custom packed, then obviously you know it
-	//or the msg is packed as: len(2 bytes) + original msg, see st_asio_wrapper::packer for more details
+	//or the msg is packed as: length(2 bytes) + original msg, see st_asio_wrapper::packer for more details
 	virtual void on_msg_send(MsgType& msg) {}
 #endif
 #ifdef WANT_ALL_MSG_SEND_NOTIFY
@@ -219,7 +234,7 @@ protected:
 	{
 		switch (id)
 		{
-		case 0: //delay put msgs into recv buffer because of recv buffer overflow
+		case 0: //delay put msgs into receive buffer cause of receive buffer overflow
 			dispatch_msg();
 			break;
 		case 1: //suspend dispatch msgs
@@ -243,7 +258,10 @@ protected:
 				return !empty; //continue the timer if not empty
 			}
 			break;
-		case 3: case 4: case 5: case 6: case 7: case 8: case 9: //reserved
+		case 3: //re-dispatch
+			do_dispatch_msg(true);
+			break;
+		case 4: case 5: case 6: case 7: case 8: case 9: //reserved
 			break;
 		default:
 			return st_timer::on_timer(id, user_data);
@@ -253,21 +271,19 @@ protected:
 		return false;
 	}
 
-	//can only be invoked after socket closed
-	void direct_dispatch_all_msg() {suspend_dispatch_msg(false);}
 	void dispatch_msg()
 	{
 #ifndef FORCE_TO_USE_MSG_RECV_BUFFER
 		bool dispatch = false;
 		for (BOOST_AUTO(iter, temp_msg_buffer.begin());
 			!suspend_dispatch_msg_ && !posting && iter != temp_msg_buffer.end();)
-			if (!on_msg(*iter))
+			if (on_msg(*iter))
 				temp_msg_buffer.erase(iter++);
 			else
 			{
 				boost::mutex::scoped_lock lock(recv_msg_buffer_mutex);
 				size_t msg_num = recv_msg_buffer.size();
-				if (msg_num < MAX_MSG_NUM) //msg recv buffer available
+				if (msg_num < MAX_MSG_NUM) //msg receive buffer available
 				{
 					dispatch = true;
 					recv_msg_buffer.splice(recv_msg_buffer.end(), temp_msg_buffer, iter++);
@@ -288,26 +304,31 @@ protected:
 #endif
 
 		if (temp_msg_buffer.empty())
-			do_start(); //recv msg sequentially, that means second recv only after first recv success
+			do_start(); //receive msg sequentially, which means second receiving only after first receiving success
 		else
 			set_timer(0, 50, NULL);
 	}
 
 	void msg_handler()
 	{
-		on_msg_handle(last_dispatch_msg); //must before next msg dispatch to keep sequence
+		bool re = on_msg_handle(last_dispatch_msg, false); //must before next msg dispatch to keep sequence
 		boost::mutex::scoped_lock lock(recv_msg_buffer_mutex);
 		dispatching = false;
-		//dispatch msg sequentially, that means second dispatch only after first dispatch success
-		do_dispatch_msg(false);
+		if (!re) //dispatch failed, re-dispatch
+		{
+			recv_msg_buffer.push_front(MsgType());
+			recv_msg_buffer.front().swap(last_dispatch_msg);
+			set_timer(3, 50, NULL);
+		}
+		else //dispatch msg sequentially, which means second dispatch only after first dispatch success
+			do_dispatch_msg(false);
 	}
 
 	//must mutex recv_msg_buffer before invoke this function
 	void do_dispatch_msg(bool need_lock)
 	{
-		boost::mutex::scoped_lock lock;
-		if (need_lock)
-			lock = boost::mutex::scoped_lock(recv_msg_buffer_mutex);
+		boost::mutex::scoped_lock lock(recv_msg_buffer_mutex, boost::defer_lock);
+		if (need_lock) lock.lock();
 
 		if (suspend_dispatch_msg_)
 		{
@@ -316,7 +337,7 @@ protected:
 		}
 		else if (!posting)
 		{
-			boost::asio::io_service& io_service_ = get_io_service();
+			BOOST_AUTO(&io_service_, get_io_service());
 			bool dispatch_all = false;
 			if (io_service_.stopped())
 				dispatch_all = !(dispatching = false);
@@ -336,13 +357,14 @@ protected:
 			if (dispatch_all)
 			{
 #ifdef FORCE_TO_USE_MSG_RECV_BUFFER
-				recv_msg_buffer.splice(recv_msg_buffer.end(), temp_msg_buffer);
-#endif
-				//the msgs in temp_msg_buffer are discarded, it's very hard to resolve this defect,
+				//the msgs in temp_msg_buffer are discarded if we don't used msg receive buffer, it's very hard to resolve this defect,
 				//so, please be very carefully if you decide to resolve this issue;
 				//the biggest problem is calling force_close in on_msg.
-				st_asio_wrapper::do_something_to_all(recv_msg_buffer,
-					boost::bind(&st_socket::on_msg_handle, this, _1));
+				recv_msg_buffer.splice(recv_msg_buffer.end(), temp_msg_buffer);
+#endif
+#ifndef DISCARD_MSG_WHEN_LINK_DOWN
+				st_asio_wrapper::do_something_to_all(recv_msg_buffer, boost::bind(&st_socket::on_msg_handle, this, _1, true));
+#endif
 				recv_msg_buffer.clear();
 			}
 		}
@@ -382,12 +404,12 @@ protected:
 	Socket next_layer_;
 
 	MsgType last_send_msg, last_dispatch_msg;
-	boost::shared_ptr<i_packer> packer_;
+	boost::shared_ptr<i_packer<MsgDataType> > packer_;
 
 	container_type msg_buffer[4];
-	//if on_msg() return true, which means use the msg recv buffer,
+	//if on_msg() return true, which means use the msg receive buffer,
 	//st_socket will invoke dispatch_msg() when got some msgs. if these msgs can't push into recv_msg_buffer
-	//because of recv buffer overflow, st_socket will delay 50 milliseconds(nonblocking) to invoke
+	//cause of receive buffer overflow, st_socket will delay 50 milliseconds(non-blocking) to invoke
 	//dispatch_msg() again, and now, as you known, temp_msg_buffer is used to hold these msgs temporarily.
 	boost::mutex msg_buffer_mutex[3];
 

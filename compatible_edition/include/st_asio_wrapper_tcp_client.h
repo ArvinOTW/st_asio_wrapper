@@ -7,7 +7,7 @@
  *		QQ: 676218192
  *		Community on QQ: 198941541
  *
- * this class only used at tcp client endpoint
+ * this class only used at TCP client endpoint
  */
 
 #ifndef ST_ASIO_WRAPPER_TCP_CLIENT_H_
@@ -40,10 +40,16 @@ public:
 		return size;
 	}
 
-    using st_client<Socket, Pool>::add_client;
+	using st_client<Socket, Pool>::add_client;
 	typename st_client<Socket, Pool>::object_type add_client()
 	{
-		BOOST_AUTO(client_ptr, ST_THIS create_client());
+		BOOST_AUTO(client_ptr, ST_THIS create_object());
+		return ST_THIS add_client(client_ptr) ? client_ptr : typename st_client<Socket, Pool>::object_type();
+	}
+	typename st_client<Socket, Pool>::object_type add_client(unsigned short port, const std::string& ip = SERVER_IP)
+	{
+		BOOST_AUTO(client_ptr, ST_THIS create_object());
+		client_ptr->set_server_addr(port, ip);
 		return ST_THIS add_client(client_ptr) ? client_ptr : typename st_client<Socket, Pool>::object_type();
 	}
 

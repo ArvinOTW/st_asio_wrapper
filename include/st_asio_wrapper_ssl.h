@@ -26,23 +26,23 @@
 namespace st_asio_wrapper
 {
 
-template <typename Socket = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>>
-class st_ssl_connector_base : public st_connector_base<Socket>
+template <typename MsgType = std::string, typename Socket = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>>
+class st_ssl_connector_base : public st_connector_base<MsgType, Socket>
 {
 public:
 	st_ssl_connector_base(boost::asio::io_service& io_service_, boost::asio::ssl::context& ctx) :
-		st_connector_base<Socket>(io_service_, ctx), authorized_(false) {}
+		st_connector_base<MsgType, Socket>(io_service_, ctx), authorized_(false) {}
 
 	//reset all, be ensure that there's no any operations performed on this st_ssl_connector_base when invoke it
-	//notice, when resue this st_ssl_connector_base, st_object_pool will invoke reset(), child must re-write this to init
-	//all member variables, and then do not forget to invoke st_ssl_connector_base::reset() to init father's
+	//notice, when reuse this st_ssl_connector_base, st_object_pool will invoke reset(), child must re-write this to initialize
+	//all member variables, and then do not forget to invoke st_ssl_connector_base::reset() to initialize father's
 	//member variables
-	virtual void reset() {authorized_ = false; st_connector_base<Socket>::reset();}
+	virtual void reset() {authorized_ = false; st_connector_base<MsgType, Socket>::reset();}
 
 	bool authorized() const {return authorized_;}
 
 protected:
-	virtual bool do_start() //connect or recv
+	virtual bool do_start() //connect or receive
 	{
 		if (!ST_THIS get_io_service().stopped())
 		{
@@ -61,9 +61,9 @@ protected:
 		return false;
 	}
 
-	virtual void on_unpack_error() {authorized_ = false; st_connector_base<Socket>::on_unpack_error();}
+	virtual void on_unpack_error() {authorized_ = false; st_connector_base<MsgType, Socket>::on_unpack_error();}
 	virtual void on_recv_error(const boost::system::error_code& ec)
-		{authorized_ = false; st_connector_base<Socket>::on_recv_error(ec);}
+		{authorized_ = false; st_connector_base<MsgType, Socket>::on_recv_error(ec);}
 	virtual void on_handshake(bool result)
 	{
 		if (result)
@@ -74,7 +74,7 @@ protected:
 			ST_THIS force_close(false);
 		}
 	}
-	virtual bool is_send_allowed() const {return authorized() && st_connector_base<Socket>::is_send_allowed();}
+	virtual bool is_send_allowed() const {return authorized() && st_connector_base<MsgType, Socket>::is_send_allowed();}
 
 	void connect_handler(const boost::system::error_code& ec)
 	{
@@ -86,7 +86,7 @@ protected:
 			do_start();
 		}
 		else
-			st_connector_base<Socket>::connect_handler(ec);
+			st_connector_base<MsgType, Socket>::connect_handler(ec);
 	}
 
 	void handshake_handler(const boost::system::error_code& ec)
@@ -118,15 +118,15 @@ public:
 	boost::asio::ssl::context& ssl_context() {return ctx;}
 
 	//this method simply create a class derived from st_socket from heap, secondly you must invoke
-	//bool add_client(typename st_client::object_ctype&, bool) before this socket can send or recv msgs.
+	//bool add_client(typename st_client::object_ctype&, bool) before this socket can send or receive msgs.
 	//for st_udp_socket, you also need to invoke set_local_addr() before add_client(), please note
-	typename st_ssl_object_pool::object_type create_client()
+	typename st_ssl_object_pool::object_type create_object()
 	{
 		auto client_ptr = ST_THIS reuse_object();
 		return client_ptr ? client_ptr : boost::make_shared<Object>(ST_THIS service_pump, ctx);
 	}
 	template<typename Arg>
-	typename st_ssl_object_pool::object_type create_client(Arg& arg)
+	typename st_ssl_object_pool::object_type create_object(Arg& arg)
 	{
 		auto client_ptr = ST_THIS reuse_object();
 		return client_ptr ? client_ptr : boost::make_shared<Object>(arg, ctx);
@@ -137,12 +137,13 @@ protected:
 };
 typedef st_tcp_client_base<st_ssl_connector, st_ssl_object_pool<st_ssl_connector>> st_ssl_tcp_client;
 
-template<typename Socket = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>, typename Server = i_server>
-class st_ssl_server_socket_base : public st_server_socket_base<Socket, Server>
+template<typename MsgType = std::string, typename Socket = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>,
+	typename Server = i_server>
+class st_ssl_server_socket_base : public st_server_socket_base<MsgType, Socket, Server>
 {
 public:
 	st_ssl_server_socket_base(Server& server_, boost::asio::ssl::context& ctx) :
-		st_server_socket_base<Socket, Server>(server_, ctx) {}
+		st_server_socket_base<MsgType, Socket, Server>(server_, ctx) {}
 };
 typedef st_ssl_server_socket_base<> st_ssl_server_socket;
 
@@ -165,7 +166,7 @@ protected:
 
 	virtual void start_next_accept()
 	{
-		auto client_ptr = ST_THIS create_client(boost::ref(*this));
+		auto client_ptr = ST_THIS create_object(boost::ref(*this));
 		ST_THIS acceptor.async_accept(client_ptr->lowest_layer(), boost::bind(&st_ssl_server_base::accept_handler, this,
 			boost::asio::placeholders::error, client_ptr));
 	}

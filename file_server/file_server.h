@@ -46,9 +46,9 @@ protected:
 	//msg handling
 #ifndef FORCE_TO_USE_MSG_RECV_BUFFER
 	//we can handle the msg very fast, so we don't use the recv buffer
-	virtual bool on_msg(msg_type& msg) {handle_msg(msg); return false;}
+	virtual bool on_msg(std::string& msg) {handle_msg(msg); return true;}
 #endif
-	virtual void on_msg_handle(msg_type& msg) {handle_msg(msg);}
+	virtual bool on_msg_handle(std::string& msg, bool link_down) {handle_msg(msg); return true;}
 	//msg handling end
 
 	virtual bool on_timer(unsigned char id, const void* user_data)
@@ -96,7 +96,7 @@ private:
 			else
 			{
 				auto read_size = (size_t) std::min(
-					(__off64_t) i_packer::get_max_msg_size(), (__off64_t) ORDER_LEN + length);
+					(__off64_t) packer::get_max_msg_size(), (__off64_t) ORDER_LEN + length);
 				read_size -= ORDER_LEN;
 
 				auto buffer = new char[ORDER_LEN + read_size];

@@ -7,8 +7,8 @@
  *		QQ: 676218192
  *		Community on QQ: 198941541
  *
- * this class used at both client and server endpoint, and in both tcp and udp socket
- * this class can only manage objects that inheirt from boost::asio::tcp::socket
+ * this class used at both client and server endpoint, and in both TCP and UDP socket
+ * this class can only manage objects that inherit from boost::asio::tcp::socket
  */
 
 #ifndef ST_ASIO_WRAPPER_OBJECT_POOL_H_
@@ -52,11 +52,11 @@
 namespace st_asio_wrapper
 {
 
-template<typename Socket>
+template<typename Object>
 class st_object_pool : public st_service_pump::i_service, public st_timer
 {
 public:
-	typedef boost::shared_ptr<Socket> object_type;
+	typedef boost::shared_ptr<Object> object_type;
 	typedef const object_type object_ctype;
 	typedef boost::container::list<object_type> container_type;
 
@@ -129,7 +129,7 @@ protected:
 		boost::mutex::scoped_lock lock(temp_object_can_mutex);
 		//objects are order by time, so we can use this feature to improve the performance
 		for (auto iter = std::begin(temp_object_can); iter != std::end(temp_object_can) && iter->is_timeout(); ++iter)
-			if (iter->object_ptr.unique() && !iter->object_ptr->started())
+			if (iter->object_ptr.unique() && iter->object_ptr->reusable())
 			{
 				auto object_ptr(std::move(iter->object_ptr));
 				temp_object_can.erase(iter);
@@ -178,19 +178,19 @@ protected:
 	}
 
 public:
-	//this method simply create a class derived from st_socket from heap, secondly you must invoke
-	//bool add_client(typename st_client::object_ctype&, bool) before this socket can send or recv msgs.
+	//this method simply create an Object from heap, then you must invoke
+	//bool add_client(typename st_client::object_ctype&, bool) before this socket can send or receive msgs.
 	//for st_udp_socket, you also need to invoke set_local_addr() before add_client(), please note
-	object_type create_client()
+	object_type create_object()
 	{
 		auto client_ptr = reuse_object();
-		return client_ptr ? client_ptr : boost::make_shared<Socket>(service_pump);
+		return client_ptr ? client_ptr : boost::make_shared<Object>(service_pump);
 	}
 	template<typename Arg>
-	object_type create_client(Arg& arg)
+	object_type create_object(Arg& arg)
 	{
 		auto client_ptr = reuse_object();
-		return client_ptr ? client_ptr : boost::make_shared<Socket>(arg);
+		return client_ptr ? client_ptr : boost::make_shared<Object>(arg);
 	}
 
 	size_t size()
@@ -213,11 +213,11 @@ public:
 			*(std::next(std::begin(object_can), index)) : object_type();
 	}
 
-	void list_all_object() {do_something_to_all(boost::bind(&Socket::show_info, _1, "", ""));}
+	void list_all_object() {do_something_to_all(boost::bind(&Object::show_info, _1, "", ""));}
 
-	//Empty ip means don't care, any ip will match
+	//Empty IP means don't care, any IP will match
 	//Zero port means don't care, any port will match
-	//this function only used with tcp socket, because for udp socket, remote endpoint means nothing.
+	//this function only used with TCP socket, because for UDP socket, remote endpoint means nothing.
 	void find_object(const std::string& ip, unsigned short port, container_type& objects)
 	{
 		if (ip.empty() && 0 == port)
@@ -287,7 +287,7 @@ protected:
 	container_type object_can;
 	boost::mutex object_can_mutex;
 
-	//because all objects are dynamic created and stored in object_can, maybe when the recv error occur
+	//because all objects are dynamic created and stored in object_can, maybe when the receiving error occur
 	//(at this point, your standard practice is deleting the object from object_can), some other
 	//asynchronous calls are still queued in boost::asio::io_service, and will be dequeued in the future,
 	//we must guarantee these objects not be freed from the heap, so, we move these objects from

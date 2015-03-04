@@ -17,7 +17,7 @@
 #include "st_asio_wrapper_unpacker.h"
 
 #ifndef GRACEFUL_CLOSE_MAX_DURATION
-	#define GRACEFUL_CLOSE_MAX_DURATION	5 //seconds, max waiting seconds while graceful closing
+	#define GRACEFUL_CLOSE_MAX_DURATION	5 //seconds, maximum waiting seconds while graceful closing
 #endif
 
 #ifndef DEFAULT_UNPACKER
@@ -29,33 +29,30 @@ namespace st_asio_wrapper
 namespace st_tcp
 {
 
-typedef std::string msg_type;
-typedef const msg_type msg_ctype;
-
-template <typename Socket>
-class st_tcp_socket_base : public st_socket<msg_type, Socket>
+template <typename MsgType, typename Socket>
+class st_tcp_socket_base : public st_socket<MsgType, Socket>
 {
 protected:
 	st_tcp_socket_base(boost::asio::io_service& io_service_) :
-		st_socket<msg_type, Socket>(io_service_), unpacker_(boost::make_shared<DEFAULT_UNPACKER>()) {reset_state();}
+		st_socket<MsgType, Socket>(io_service_), unpacker_(boost::make_shared<DEFAULT_UNPACKER>()) {reset_state();}
 
 	template<typename Arg>
 	st_tcp_socket_base(boost::asio::io_service& io_service_, Arg& arg) :
-		st_socket<msg_type, Socket>(io_service_, arg), unpacker_(boost::make_shared<DEFAULT_UNPACKER>()) {reset_state();}
+		st_socket<MsgType, Socket>(io_service_, arg), unpacker_(boost::make_shared<DEFAULT_UNPACKER>()) {reset_state();}
 
 public:
 	//reset all, be ensure that there's no any operations performed on this st_tcp_socket_base when invoke it
-	void reset() {ST_THIS reset_state(); ST_THIS clear_buffer();}
+	void reset() {reset_state(); ST_THIS clear_buffer();}
 	void reset_state()
 	{
 		reset_unpacker_state();
-		st_socket<msg_type, Socket>::reset_state();
+		st_socket<MsgType, Socket>::reset_state();
 		closing = false;
 	}
 
 	void disconnect() {force_close();}
 	void force_close() {clean_up();}
-	void graceful_close() //will block until closing success or timeout
+	void graceful_close() //will block until closing success or time out
 	{
 		closing = true;
 
@@ -75,10 +72,10 @@ public:
 	bool is_closing() const {return closing;}
 
 	//get or change the unpacker at runtime
-	boost::shared_ptr<i_unpacker> inner_unpacker() const {return unpacker_;}
-	void inner_unpacker(const boost::shared_ptr<i_unpacker>& _unpacker_) {unpacker_ = _unpacker_;}
+	boost::shared_ptr<i_unpacker<MsgType>> inner_unpacker() {return unpacker_;}
+	void inner_unpacker(const boost::shared_ptr<i_unpacker<MsgType>>& _unpacker_) {unpacker_ = _unpacker_;}
 
-	using st_socket<msg_type, Socket>::send_msg;
+	using st_socket<MsgType, Socket>::send_msg;
 	///////////////////////////////////////////////////
 	//msg sending interface
 	TCP_SEND_MSG(send_msg, false) //use the packer with native = false to pack the msgs
@@ -111,9 +108,10 @@ protected:
 		{
 			ST_THIS sending = true;
 			ST_THIS last_send_msg.swap(send_msg_buffer.front());
-			boost::asio::async_write(ST_THIS next_layer(), boost::asio::buffer(ST_THIS last_send_msg),
+			boost::asio::async_write(ST_THIS next_layer(),
+				boost::asio::buffer(ST_THIS last_send_msg.data(), ST_THIS last_send_msg.size()),
 				boost::bind(&st_tcp_socket_base::send_handler, this,
-				boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+					boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
 			send_msg_buffer.pop_front();
 		}
 
@@ -121,47 +119,33 @@ protected:
 	}
 
 	virtual bool is_send_allowed() const
-		{return !is_closing() && st_socket<msg_type, Socket>::is_send_allowed();}
+		{return !is_closing() && st_socket<MsgType, Socket>::is_send_allowed();}
 	//can send data or not(just put into send buffer)
 
 	//msg can not be unpacked
 	//the link can continue to use, but need not close the st_tcp_socket_base at both client and server endpoint
 	virtual void on_unpack_error() = 0;
 
-	//recv error or peer endpoint quit(false ec means ok)
+	//receiving error or peer endpoint quit(false ec means ok)
 	virtual void on_recv_error(const boost::system::error_code& ec) = 0;
 
 #ifndef FORCE_TO_USE_MSG_RECV_BUFFER
-	//if you want to use your own recv buffer, you can move the msg to your own recv buffer,
-	//and return false, then, handle the msg as your own strategy(may be you'll need a msg dispatch thread)
-	//or, you can handle the msg at here and return false, but this will reduce efficiency(
-	//because this msg handling block the next msg receiving on the same st_tcp_socket_base) unless you can
-	//handle the msg very fast(which will inversely more efficient, because msg recv buffer and msg dispatching
-	//are not needed any more).
-	//
-	//return true means use the msg recv buffer, you must handle the msgs in on_msg_handle()
-	//notice: on_msg_handle() will not be invoked from within this function
-	//
-	//notice: the msg is unpacked, using inconstant is for the convenience of swapping
-	virtual bool on_msg(msg_type& msg)
-		{unified_out::debug_out("recv(" size_t_format "): %s", msg.size(), msg.data()); return false;}
+	virtual bool on_msg(MsgType& msg)
+		{unified_out::debug_out("recv(" size_t_format "): %s", msg.size(), msg.data()); return true;}
 #endif
 
-	//handling msg at here will not block msg receiving
-	//if on_msg() return false, this function will not be invoked due to no msgs need to dispatch
-	//notice: the msg is unpacked, using inconstant is for the convenience of swapping
-	virtual void on_msg_handle(msg_type& msg)
-		{unified_out::debug_out("recv(" size_t_format "): %s", msg.size(), msg.data());}
+	virtual bool on_msg_handle(MsgType& msg, bool link_down)
+		{unified_out::debug_out("recv(" size_t_format "): %s", msg.size(), msg.data()); return true;}
 
-	//start the async read
+	//start the asynchronous read
 	//it's child's responsibility to invoke this properly,
 	//because st_tcp_socket_base doesn't know any of the connection status
 	void do_recv_msg()
 	{
 		auto recv_buff = unpacker_->prepare_next_recv();
 		if (boost::asio::buffer_size(recv_buff) > 0)
-			boost::asio::async_read(ST_THIS next_layer(), recv_buff, boost::bind(&i_unpacker::completion_condition, unpacker_,
-				boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred),
+			boost::asio::async_read(ST_THIS next_layer(), recv_buff, boost::bind(&i_unpacker<MsgType>::completion_condition,
+				unpacker_, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred),
 				boost::bind(&st_tcp_socket_base::recv_handler, this,
 					boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
 	}
@@ -179,7 +163,6 @@ protected:
 		}
 
 		ST_THIS stop_all_timer();
-		ST_THIS direct_dispatch_all_msg();
 		reset_state();
 	}
 
@@ -191,7 +174,12 @@ protected:
 			ST_THIS dispatch_msg();
 
 			if (!unpack_ok)
+			{
 				on_unpack_error();
+				//reset unpacker's state after on_unpack_error(),
+				//so user can get the left half-baked msg in on_unpack_error()
+				unpacker_->reset_unpacker_state();
+			}
 		}
 		else
 			on_recv_error(ec);
@@ -223,7 +211,7 @@ protected:
 	}
 
 protected:
-	boost::shared_ptr<i_unpacker> unpacker_;
+	boost::shared_ptr<i_unpacker<MsgType>> unpacker_;
 	bool closing;
 };
 

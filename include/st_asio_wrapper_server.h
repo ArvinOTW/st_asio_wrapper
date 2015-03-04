@@ -24,8 +24,8 @@
 #define ASYNC_ACCEPT_NUM			1 //how many async_accept delivery concurrently
 #endif
 
-//in set_server_addr, if the ip is empty, TCP_DEFAULT_IP_VERSION will define the ip version,
-//or, the ip version will be deduced by the ip address.
+//in set_server_addr, if the IP is empty, TCP_DEFAULT_IP_VERSION will define the IP version,
+//or, the IP version will be deduced by the IP address.
 //boost::asio::ip::tcp::v4() means ipv4 and boost::asio::ip::tcp::v6() means ipv6.
 #ifndef TCP_DEFAULT_IP_VERSION
 #define TCP_DEFAULT_IP_VERSION boost::asio::ip::tcp::v4()
@@ -119,7 +119,7 @@ protected:
 
 	virtual void start_next_accept()
 	{
-		auto client_ptr = ST_THIS create_client(boost::ref(*this));
+		auto client_ptr = ST_THIS create_object(boost::ref(*this));
 		acceptor.async_accept(client_ptr->lowest_layer(), boost::bind(&st_server_base::accept_handler, this,
 			boost::asio::placeholders::error, client_ptr));
 	}
